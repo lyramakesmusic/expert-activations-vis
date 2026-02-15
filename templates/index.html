@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MoE Router Visualizer</title>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+    --bg: #0a0a0a;
+    --panel: #1a1a1a;
+    --border: #2a2a2a;
+    --text: #c8c8c8;
+    --text-dim: #555;
+    --blue: #2196F3;
+    --blue-dim: rgba(33, 150, 243, 0.15);
+    --gray-node: #4a4a4a;
+    --gray-line: #3a3a3a;
+    --mono: 'Consolas', 'Monaco', 'SF Mono', monospace;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+html, body {
+    height: 100%;
+    overflow: hidden;
+    font-family: var(--font);
+    color: var(--text);
+    background: var(--bg);
+}
+
+#app {
+    display: flex;
+    height: 100vh;
+}
+
+/* === Left: visualization (big area) === */
+#vis-area {
+    flex: 1;
+    position: relative;
+    background: var(--bg);
+}
+
+canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+#expert-tooltip {
+    display: none;
+    position: absolute;
+    background: #222;
+    border: 1px solid #3a3a3a;
+    padding: 6px 10px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: var(--mono);
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* === Right panel: tokens + input === */
+#right-panel {
+    width: 600px;
+    min-width: 600px;
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border);
+}
+
+/* Token stream area */
+#token-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    word-break: break-word;
+}
+
+#tokens {
+    display: inline;
+}
+
+.tok {
+    padding: 1px 0;
+    border-radius: 2px;
+    cursor: pointer;
+    white-space: pre-wrap;
+}
+
+.tok.prompt {
+    color: #666;
+}
+
+.tok.generated {
+    background: rgba(33, 150, 243, var(--intensity, 0.15));
+    border-bottom: 2px solid rgba(33, 150, 243, var(--intensity, 0.15));
+    color: #ccc;
+}
+
+.tok.current {
+    background: rgba(33, 150, 243, 0.5);
+    border-bottom-color: rgba(33, 150, 243, 0.8);
+    color: #fff;
+}
+
+.tok:hover {
+    background: rgba(33, 150, 243, 0.3);
+}
+
+/* Bottom input area */
+#input-area {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+#prompt-input {
+    flex: 1;
+    background: #111;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 4px;
+    outline: none;
+}
+
+#prompt-input:focus {
+    border-color: var(--blue);
+}
+
+#run-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: var(--blue);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+#run-btn:hover { opacity: 0.85; }
+#run-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#run-btn svg {
+    fill: white;
+    width: 16px;
+    height: 16px;
+}
+
+/* Status + controls bar */
+#status-bar {
+    padding: 8px 16px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+#layer-controls {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+#layer-controls label {
+    font-size: 10px;
+    color: #444;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+#layer-controls select, #layer-controls input {
+    background: #111;
+    color: #888;
+    border: 1px solid #2a2a2a;
+    padding: 2px 6px;
+    border-radius: 2px;
+    font-family: var(--mono);
+    font-size: 11px;
+}
+
+#layer-controls input { width: 42px; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="app">
+    <div id="vis-area">
+        <canvas id="vis"></canvas>
+        <div id="expert-tooltip"></div>
+    </div>
+
+    <div id="right-panel">
+        <div id="token-area"><div id="tokens"></div></div>
+        <div id="status-bar">
+            <span id="status-text">Ready</span>
+            <div id="layer-controls">
+                <label>Layer</label>
+                <select id="layer-select"></select>
+                <label>Tokens</label>
+                <input type="number" id="max-tokens" value="64" min="1" max="512">
+            </div>
+        </div>
+        <div id="input-area">
+            <input type="text" id="prompt-input" placeholder="Type a prompt..." spellcheck="false" autocomplete="off">
+            <button id="run-btn">
+                <svg viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21"/></svg>
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+const NUM_EXPERTS = 128;
+const TOTAL_LAYERS = 56;
+
+// === State ===
+let tokenData = [];       // [{token, experts: [{id, score}], isPrompt}]
+let currentIdx = -1;
+let isRunning = false;
+let abortController = null;
+let hoveredExpert = -1;
+let animProgress = 1.0;   // 0->1 for new token animation
+let animFrame = null;
+let expertHeat = new Float32Array(NUM_EXPERTS); // cumulative score per expert across all generated tokens
+let expertHeatMax = 1.0;  // for normalization
+
+// === DOM ===
+const canvas = document.getElementById('vis');
+const ctx = canvas.getContext('2d');
+const tokensEl = document.getElementById('tokens');
+const promptInput = document.getElementById('prompt-input');
+const runBtn = document.getElementById('run-btn');
+const statusText = document.getElementById('status-text');
+const tooltip = document.getElementById('expert-tooltip');
+const layerSelect = document.getElementById('layer-select');
+const maxTokensInput = document.getElementById('max-tokens');
+
+// Populate layer selector (MoE layers: 2-55)
+for (let i = 2; i < TOTAL_LAYERS; i++) {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = i;
+    if (i === 42) opt.selected = true;
+    layerSelect.appendChild(opt);
+}
+
+// === Canvas ===
+function resizeCanvas() {
+    const wrap = canvas.parentElement;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = wrap.clientWidth * dpr;
+    canvas.height = wrap.clientHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+}
+window.addEventListener('resize', resizeCanvas);
+
+// === Expert positions: arranged in a ring ===
+function getExpertPositions(cx, cy, radius) {
+    const positions = [];
+    for (let i = 0; i < NUM_EXPERTS; i++) {
+        const angle = (i / NUM_EXPERTS) * Math.PI * 2 - Math.PI / 2;
+        positions.push({
+            x: cx + Math.cos(angle) * radius,
+            y: cy + Math.sin(angle) * radius,
+            angle,
+            id: i,
+        });
+    }
+    return positions;
+}
+
+// === Drawing ===
+function draw() {
+    const w = canvas.parentElement.clientWidth;
+    const h = canvas.parentElement.clientHeight;
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) * 0.38;
+    const nodeR = 5;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const expertPos = getExpertPositions(cx, cy, radius);
+    const current = currentIdx >= 0 && currentIdx < tokenData.length ? tokenData[currentIdx] : null;
+    const activeMap = {};
+    if (current) {
+        for (const e of current.experts) activeMap[e.id] = e.score;
+    }
+
+    const p = animProgress; // 0-1 easing
+
+    // --- Connection lines ---
+    if (current) {
+        for (const e of current.experts) {
+            const pos = expertPos[e.id];
+            const score = e.score;
+            const alpha = (0.2 + score * 0.6) * p;
+
+            // Bright line
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + (pos.x - cx) * p, cy + (pos.y - cy) * p);
+            ctx.strokeStyle = `rgba(33, 150, 243, ${alpha})`;
+            ctx.lineWidth = 1 + score * 2.5;
+            ctx.stroke();
+
+            // Soft glow line
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + (pos.x - cx) * p, cy + (pos.y - cy) * p);
+            ctx.strokeStyle = `rgba(33, 150, 243, ${alpha * 0.3})`;
+            ctx.lineWidth = 4 + score * 8;
+            ctx.stroke();
+        }
+    }
+
+    // --- Expert nodes ---
+    for (let i = 0; i < NUM_EXPERTS; i++) {
+        const pos = expertPos[i];
+        const score = activeMap[i];
+        const isActive = score !== undefined;
+        const isHovered = hoveredExpert === i;
+
+        // Purple cumulative heat (always drawn, under blue if active)
+        const heat = expertHeatMax > 0 ? expertHeat[i] / expertHeatMax : 0;
+        const heatR = nodeR + heat * 3;
+
+        if (heat > 0.01) {
+            const hg = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, heatR * 2.5);
+            hg.addColorStop(0, `rgba(140, 80, 200, ${heat * 0.25})`);
+            hg.addColorStop(1, 'rgba(140, 80, 200, 0)');
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, heatR * 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = hg;
+            ctx.fill();
+
+            // Purple solid base
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, heatR, 0, Math.PI * 2);
+            const gr = 58 + heat * 82;
+            const gg = 58 - heat * 10;
+            const gb = 58 + heat * 142;
+            ctx.fillStyle = isHovered
+                ? `rgb(${Math.min(gr+30,255)}, ${Math.min(gg+30,255)}, ${Math.min(gb+30,255)})`
+                : `rgb(${gr|0}, ${gg|0}, ${gb|0})`;
+            ctx.fill();
+        } else if (!isActive) {
+            // Cold gray node
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, nodeR, 0, Math.PI * 2);
+            ctx.fillStyle = isHovered ? '#5a5a5a' : '#3a3a3a';
+            ctx.fill();
+        }
+
+        if (isActive) {
+            const r = (nodeR + score * 10) * (0.3 + 0.7 * p);
+
+            // Blue glow on top
+            const glow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, r * 3.5);
+            glow.addColorStop(0, `rgba(33, 150, 243, ${0.35 * p})`);
+            glow.addColorStop(1, 'rgba(33, 150, 243, 0)');
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, r * 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = glow;
+            ctx.fill();
+
+            // Blue solid node
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(33, 150, 243, ${0.7 + 0.3 * p})`;
+            ctx.fill();
+        }
+
+        // Labels for active, hovered, hot, or every 16th
+        const heat_i = expertHeatMax > 0 ? expertHeat[i] / expertHeatMax : 0;
+        if (isActive || isHovered || i % 16 === 0 || heat_i > 0.3) {
+            const lr = radius + 20;
+            const lx = cx + Math.cos(pos.angle) * lr;
+            const ly = cy + Math.sin(pos.angle) * lr;
+            const labelHeat = heat_i > 0.01 && !isActive;
+            ctx.fillStyle = isActive ? `rgba(33, 150, 243, ${0.6 + 0.4 * p})`
+                : labelHeat ? `rgba(140, 80, 200, ${0.3 + heat_i * 0.5})` : '#3a3a3a';
+            ctx.font = `${isActive ? 'bold ' : ''}10px Consolas, monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(i, lx, ly);
+        }
+
+        // Score labels inside ring for active
+        if (isActive) {
+            const sr = radius - 20;
+            const sx = cx + Math.cos(pos.angle) * sr;
+            const sy = cy + Math.sin(pos.angle) * sr;
+            ctx.fillStyle = `rgba(33, 150, 243, ${0.5 * p})`;
+            ctx.font = '9px Consolas, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(score.toFixed(2), sx, sy);
+        }
+    }
+
+    // --- Center router blob ---
+    const cr = 28;
+
+    // Center glow
+    if (current) {
+        const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr * 3);
+        cg.addColorStop(0, `rgba(33, 150, 243, ${0.15 * p})`);
+        cg.addColorStop(1, 'rgba(33, 150, 243, 0)');
+        ctx.beginPath();
+        ctx.arc(cx, cy, cr * 3, 0, Math.PI * 2);
+        ctx.fillStyle = cg;
+        ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+    ctx.fillStyle = current ? '#0d1a2a' : '#1a1a1a';
+    ctx.fill();
+    ctx.strokeStyle = current ? 'rgba(33, 150, 243, 0.4)' : '#2a2a2a';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Current token in center
+    if (current) {
+        ctx.fillStyle = '#ddd';
+        ctx.font = '13px Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        let tok = current.token;
+        if (tok.length > 8) tok = tok.slice(0, 7) + '\u2026';
+        ctx.fillText(tok, cx, cy);
+    } else {
+        ctx.fillStyle = '#333';
+        ctx.font = '10px Consolas, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('router', cx, cy);
+    }
+
+    // Shared expert dot
+    ctx.beginPath();
+    ctx.arc(cx, cy + cr + 16, 4, 0, Math.PI * 2);
+    ctx.fillStyle = current ? 'rgba(33, 150, 243, 0.5)' : '#2a2a2a';
+    ctx.fill();
+    ctx.fillStyle = '#444';
+    ctx.font = '9px Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('shared', cx, cy + cr + 30);
+
+    // Info text
+    ctx.fillStyle = '#333';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`128 experts \u00B7 top-8 \u00B7 layer ${layerSelect.value}`, 14, 14);
+
+    if (tokenData.length > 0) {
+        ctx.textAlign = 'right';
+        const genCount = tokenData.filter(t => !t.isPrompt).length;
+        ctx.fillText(`${currentIdx + 1} / ${tokenData.length} (${genCount} generated)`, w - 14, 14);
+    }
+}
+
+// === Animate new token ===
+function animateIn() {
+    animProgress = 0;
+    const start = performance.now();
+    const duration = 200; // ms
+
+    function step(now) {
+        const t = Math.min((now - start) / duration, 1);
+        animProgress = t * t * (3 - 2 * t); // smoothstep
+        draw();
+        if (t < 1) animFrame = requestAnimationFrame(step);
+    }
+    if (animFrame) cancelAnimationFrame(animFrame);
+    animFrame = requestAnimationFrame(step);
+}
+
+// === Mouse hover ===
+canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const w = rect.width;
+    const h = rect.height;
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) * 0.38;
+    const expertPos = getExpertPositions(cx, cy, radius);
+
+    let closest = -1;
+    let closestDist = 18;
+    for (let i = 0; i < NUM_EXPERTS; i++) {
+        const dx = mx - expertPos[i].x;
+        const dy = my - expertPos[i].y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < closestDist) { closestDist = d; closest = i; }
+    }
+
+    if (closest !== hoveredExpert) {
+        hoveredExpert = closest;
+        draw();
+        if (closest >= 0) {
+            const current = currentIdx >= 0 ? tokenData[currentIdx] : null;
+            const active = current?.experts.find(e => e.id === closest);
+            tooltip.style.display = 'block';
+            tooltip.style.left = (e.clientX - rect.left + 12) + 'px';
+            tooltip.style.top = (e.clientY - rect.top - 8) + 'px';
+            const heatVal = expertHeat[closest];
+            let tip = `expert ${closest}`;
+            if (active) tip += `<br>score: ${active.score.toFixed(4)}`;
+            else tip += '<br><span style="color:#444">inactive</span>';
+            if (heatVal > 0) tip += `<br><span style="color:#8c50c8">total: ${heatVal.toFixed(2)}</span>`;
+            tooltip.innerHTML = tip;
+        } else {
+            tooltip.style.display = 'none';
+        }
+    }
+});
+
+canvas.addEventListener('mouseleave', () => {
+    hoveredExpert = -1;
+    tooltip.style.display = 'none';
+    draw();
+});
+
+// === Token rendering (inline spans, preserve whitespace) ===
+function renderTokens() {
+    tokensEl.innerHTML = '';
+    for (let i = 0; i < tokenData.length; i++) {
+        const td = tokenData[i];
+        const span = document.createElement('span');
+        span.className = 'tok ' + (td.isPrompt ? 'prompt' : 'generated');
+        if (i === currentIdx) span.classList.add('current');
+
+        // For generated tokens, set intensity based on max expert score
+        if (!td.isPrompt && td.experts.length > 0) {
+            const maxScore = Math.max(...td.experts.map(e => e.score));
+            const intensity = 0.1 + Math.min(maxScore, 1) * 0.4;
+            span.style.setProperty('--intensity', intensity.toFixed(2));
+        }
+
+        span.textContent = td.token;
+        span.addEventListener('click', () => {
+            currentIdx = i;
+            animProgress = 1;
+            renderTokens();
+            draw();
+        });
+        tokensEl.appendChild(span);
+    }
+    const area = document.getElementById('token-area');
+    area.scrollTop = area.scrollHeight;
+}
+
+// === Run inference ===
+async function runInference() {
+    const prompt = promptInput.value.trim();
+    if (!prompt || isRunning) return;
+
+    isRunning = true;
+    runBtn.disabled = true;
+    tokenData = [];
+    currentIdx = -1;
+    tokensEl.innerHTML = '';
+    expertHeat = new Float32Array(NUM_EXPERTS);
+    expertHeatMax = 1.0;
+    statusText.textContent = 'Starting...';
+
+    abortController = new AbortController();
+    const layer = parseInt(layerSelect.value);
+    const maxTokens = parseInt(maxTokensInput.value) || 64;
+    const startTime = performance.now();
+    let genCount = 0;
+
+    try {
+        const resp = await fetch('/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: prompt, layer, max_tokens: maxTokens }),
+            signal: abortController.signal,
+        });
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+
+                try {
+                    const msg = JSON.parse(data);
+
+                    if (msg.type === 'prompt_tokens') {
+                        for (const t of msg.tokens) {
+                            tokenData.push({ token: t, experts: [], isPrompt: true });
+                        }
+                        currentIdx = tokenData.length - 1;
+                        renderTokens();
+                        statusText.textContent = `prompt: ${msg.tokens.length} tokens`;
+                    }
+
+                    if (msg.type === 'token') {
+                        genCount++;
+                        tokenData.push({
+                            token: msg.token,
+                            experts: msg.experts,
+                            isPrompt: false,
+                        });
+
+                        // Accumulate expert heat
+                        for (const e of msg.experts) {
+                            expertHeat[e.id] += e.score;
+                            if (expertHeat[e.id] > expertHeatMax) expertHeatMax = expertHeat[e.id];
+                        }
+
+                        currentIdx = tokenData.length - 1;
+                        renderTokens();
+                        animateIn();
+
+                        const elapsed = (performance.now() - startTime) / 1000;
+                        statusText.textContent = `${genCount} tokens \u00B7 ${(genCount / elapsed).toFixed(1)} tok/s`;
+                    }
+
+                    if (msg.type === 'error') {
+                        statusText.textContent = `error: ${msg.message}`;
+                    }
+                } catch (e) {}
+            }
+        }
+    } catch (e) {
+        if (e.name !== 'AbortError') statusText.textContent = `error: ${e.message}`;
+    }
+
+    isRunning = false;
+    runBtn.disabled = false;
+    if (statusText.textContent.includes('tokens'))
+        statusText.textContent += ' \u00B7 done';
+}
+
+// === Events ===
+runBtn.addEventListener('click', runInference);
+
+promptInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        if (isRunning) {
+            abortController?.abort();
+            statusText.textContent = 'stopped';
+            isRunning = false;
+            runBtn.disabled = false;
+        } else {
+            runInference();
+        }
+    }
+});
+
+// Arrow keys to step through tokens (when not in input)
+document.addEventListener('keydown', (e) => {
+    if (document.activeElement === promptInput) return;
+    if (e.key === 'ArrowLeft' && currentIdx > 0) {
+        currentIdx--;
+        animProgress = 1;
+        renderTokens();
+        draw();
+    } else if (e.key === 'ArrowRight' && currentIdx < tokenData.length - 1) {
+        currentIdx++;
+        animProgress = 1;
+        renderTokens();
+        draw();
+    } else if (e.key === 'Escape' && isRunning) {
+        abortController?.abort();
+        statusText.textContent = 'stopped';
+        isRunning = false;
+        runBtn.disabled = false;
+    }
+});
+
+resizeCanvas();
+</script>
+</body>
+</html>
