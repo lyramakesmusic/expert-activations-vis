@@ -2,7 +2,7 @@
 
 Shows which experts fire for each token during generation. Type a prompt, hit enter, watch the routing happen live.
 
-![screenshot](../router-vis.png)
+![screenshot](router-vis.png)
 
 ## What it does
 
